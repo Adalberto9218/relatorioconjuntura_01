@@ -1,0 +1,482 @@
+
+```{r}
+parametros2 <- list(
+  # Pessoas de 14+ anos (Mil pessoas): ocupados/desocupados na Força de trabalho
+  api_ocupados_desocupados = "/t/6318/n1/all/v/1641/p/all/c629/all",
+  
+  # Taxa de Desocupação (%)
+  api_tx_desocupacao = "/t/6381/n1/all/v/4099/p/all/d/v4099%201",
+  
+  # Nível de Ocupação (%)
+  api_nivel_ocupacao = "/t/6379/n1/all/v/4097/p/all/d/v4097%201",
+  
+  # Taxa de Participação na Força de trabalho (%)
+  api_tx_participacao = "/t/5944/n1/all/v/4096/p/all/d/v4096%201",
+  
+  # Ocupação por Categorias (Mil pessoas): posição na ocupação e categoria do emprego
+  api_categorias = "/t/6320/n1/all/v/4090/p/all/c11913/31722,31723,31724,31727,31731,96170,96171",
+  
+  # Grupos de Atividades (Mil pessoas)
+  api_grupos = "/t/6323/n1/all/v/4090/p/all/c693/allxt",
+  
+  # Rendimento médio real e nominal de todos os trabalhos habitualmente recebidos por mês (R$)
+  api_rendimento = "/t/6390/n1/all/v/5929,5933/p/all",
+  
+  # Massa de rendimento, real e nominal, de todos os trabalhos habitualmente recebidos por mês (R$ milhões)
+  api_massa = "/t/6392/n1/all/v/6288,6293/p/all",
+  
+  # Saldo do Novo CAGED (pessoas)
+  api_caged = "CAGED12_SALDON12",
+  
+  # Pedidos de Seguro-Desemprego
+  # Buscar URL pelo Xpath e salvar URL da planilha XLSX
+  url_seguro = rvest::read_html("http://pdet.mte.gov.br/component/content/article?id=1778") %>%
+    rvest::html_nodes(xpath = '//*[@id="content-section"]/div[2]/div/p[2]') %>%
+    rvest::html_node("a") %>% 
+    rvest::html_attr("href") %>% 
+    paste0("http://pdet.mte.gov.br", .)
+)
+
+
+```
+
+```{r echo=FALSE}
+# Pessoas de 14+ anos (Mil pessoas): ocupados/desocupados na Força de trabalho
+raw_ocupados_desocupados <- sidrar::get_sidra(api = parametros2$api_ocupados_desocupados)
+
+# Taxa de Desocupação (%)
+raw_tx_desocupacao <- sidrar::get_sidra(api = parametros2$api_tx_desocupacao)
+
+# Nível de Ocupação (%)
+raw_nivel_ocupacao <- sidrar::get_sidra(api = parametros2$api_nivel_ocupacao)
+
+# Taxa de Participação na Força de trabalho (%)
+raw_tx_participacao <- sidrar::get_sidra(api = parametros2$api_tx_participacao)
+
+# Ocupação por Categorias (Mil pessoas)
+raw_categorias <- sidrar::get_sidra(api = parametros2$api_categorias)
+
+# Grupos de Atividades (Mil pessoas)
+raw_grupos <- sidrar::get_sidra(api = parametros2$api_grupos)
+
+# Rendimento médio real e nominal de todos os trabalhos habitualmente recebidos por mês (R$)
+raw_rendimento <- sidrar::get_sidra(api = parametros2$api_rendimento)
+
+# Massa de rendimento, real e nominal (R$ milhões)
+raw_massa <- sidrar::get_sidra(api = parametros2$api_massa)
+
+# Saldo do Novo CAGED
+raw_caged <- ipeadatar::ipeadata(code = parametros2$api_caged)
+
+# Pedidos de Seguro-Desemprego
+download.file(
+  url      = parametros2$url_seguro,
+  destfile = file.path(".", basename(parametros2$url_seguro)),
+  mode     = "wb"
+  )
+
+raw_seguro <- readxl::read_excel(
+  path  = list.files(pattern = ".xls"),
+  sheet = "Tabela 1",
+  skip  = 5, 
+  n_max = 28
+  )
+```
+
+```{r echo=FALSE}
+## Tratamento dos dados
+
+# Pessoas de 14+ anos (Mil pessoas): ocupados/desocupados na Força de trabalho
+ocupados_desocupados <- raw_ocupados_desocupados %>% 
+  dplyr::select(
+    "date"     = `Trimestre Móvel (Código)`,
+    "variable" = `Condição em relação à força de trabalho e condição de ocupação`,
+    "value"    = `Valor`
+  ) %>% 
+  dplyr::mutate(
+    date = lubridate::ym(date),
+    variable = dplyr::recode(
+      variable,
+      "Total"                          = "População total (PIA)",
+      "Força de trabalho"              = "Força de trabalho (PEA)",
+      "Força de trabalho - ocupada"    = "Ocupados", 
+      "Força de trabalho - desocupada" = "Desocupados",
+      "Fora da força de trabalho"      = "Fora da força (PNEA)"
+      ),
+    value = value / 1000 # converter em milhões de pessoas
+  ) %>% 
+  dplyr::as_tibble()
+
+# Taxa de Desocupação (%)
+tx_desocupacao <- raw_tx_desocupacao %>% 
+  clean_pnadcm(id = "Taxa de Desocupação")
+
+# Nível de Ocupação (%)
+nivel_ocupacao <- raw_nivel_ocupacao %>% 
+  clean_pnadcm(id = "Nível de Ocupação")
+
+# Taxa de Participação na Força de trabalho (%)
+tx_participacao <- raw_tx_participacao %>% 
+  clean_pnadcm(id = "Taxa de Participação")
+
+# Juntar dados: Ocupados/Desocupados, Tx. Desocupação, Nível e Tx. Participação
+resumo_pnadcm <- purrr::map_dfr(
+  .x = list(ocupados_desocupados, tx_desocupacao, nivel_ocupacao, tx_participacao),
+  ~dplyr::bind_rows(.x)
+  ) %>% 
+  dplyr::mutate(variable = forcats::as_factor(variable))
+
+# Ocupação por Categorias (Mil pessoas)
+categorias <- raw_categorias %>%
+  dplyr::select(
+    "date"     = `Trimestre Móvel (Código)`,
+    "variable" = `Posição na ocupação e categoria do emprego no trabalho principal`,
+    "value"    = `Valor`
+  ) %>% 
+  dplyr::mutate(
+    date     = lubridate::ym(date),
+    variable = stringr::str_remove_all(
+      variable, 
+      "Empregado no setor privado, exclusive trabalhador doméstico - "
+      ) %>% dplyr::recode(
+        "com carteira de trabalho assinada" = "Empregado com carteira",
+        "sem carteira de trabalho assinada" = "Empregado sem carteira"
+      ) %>% 
+      forcats::as_factor(),
+    value    = value / 1000 # converter em milhões de pessoas
+  ) %>% 
+  dplyr::as_tibble()
+
+# Grupos de Atividades (Mil pessoas)
+grupos <- raw_grupos %>%
+  dplyr::select(
+    "date"     = `Trimestre Móvel (Código)`,
+    "variable" = `Grupamento de atividades no trabalho principal - PNADC`,
+    "value"    = `Valor`
+  ) %>% 
+  dplyr::mutate(
+    date     = lubridate::ym(date),
+    variable = forcats::as_factor(variable),
+    value    = value / 1000 # converter em milhões de pessoas
+  ) %>% 
+  dplyr::as_tibble()
+
+# Rendimento médio real e nominal de todos os trabalhos habitualmente recebidos por mês (R$)
+rendimento <- raw_rendimento %>%
+  dplyr::select(
+    "date"     = `Trimestre Móvel (Código)`,
+    "variable" = `Variável`,
+    "value"    = `Valor`
+  ) %>% 
+  dplyr::mutate(
+    date     = lubridate::ym(date),
+    variable = forcats::as_factor(variable) %>% 
+      forcats::fct_recode(
+        "Rendimento nominal" = "Rendimento médio nominal de todos os trabalhos, habitualmente recebido por mês, pelas pessoas de 14 anos ou mais de idade, ocupadas na semana de referência, com rendimento de trabalho",
+        "Rendimento real" = "Rendimento médio real de todos os trabalhos, habitualmente recebido por mês, pelas pessoas de 14 anos ou mais de idade, ocupadas na semana de referência, com rendimento de trabalho"
+      )
+  ) %>% 
+  dplyr::as_tibble()
+
+# Massa de rendimento, real e nominal (R$ milhões)
+massa <- raw_massa %>%
+  dplyr::select(
+    "date"     = `Trimestre Móvel (Código)`,
+    "variable" = `Variável`,
+    "value"    = `Valor`
+  ) %>% 
+  dplyr::mutate(
+    date     = lubridate::ym(date),
+    value    = value / 1000, # converter em R$ bilhões
+    variable = forcats::as_factor(variable) %>% 
+      forcats::fct_recode(
+        "Massa de rendimento nominal" = "Massa de rendimento nominal de todos os trabalhos, habitualmente recebido por mês, pelas pessoas de 14 anos ou mais de idade, ocupadas na semana de referência, com rendimento de trabalho",
+        "Massa de rendimento real" = "Massa de rendimento real de todos os trabalhos, habitualmente recebido por mês, pelas pessoas de 14 anos ou mais de idade, ocupadas na semana de referência, com rendimento de trabalho"
+      )
+  ) %>% 
+  dplyr::as_tibble()
+
+
+# Saldo do Novo CAGED
+caged <- raw_caged %>%
+  dplyr::select(date, value) %>% 
+  dplyr::mutate(value = value / 1000) %>% # converter em milhares
+  dplyr::as_tibble()
+
+# Pedidos de Seguro-Desemprego
+seguro <- raw_seguro %>% 
+  dplyr::rename("regiao" = 1) %>% 
+  dplyr::select(!dplyr::contains("..")) %>% 
+  tidyr::pivot_longer(
+    cols      = -regiao,
+    names_to  = "date",
+    values_to = "value"
+    ) %>% 
+  dplyr::mutate(
+    regiao = stringr::str_to_title(regiao, locale = "pt"),
+    date = lubridate::ym(date)
+  )
+```
+
+## Visão Geral do Mercado de Trabalho
+
+```{r echo=FALSE}
+# Gerar tabela
+resumo_pnadcm %>% 
+  dplyr::group_by(variable) %>% 
+  dplyr::slice_tail(n = 3) %>% 
+  dplyr::ungroup() %>% 
+  dplyr::mutate(date = format(date, "%b/%y")) %>% 
+  tidyr::pivot_wider(
+    id_cols = variable,
+    names_from = date,
+    values_from = value
+  ) %>% 
+  dplyr::mutate(
+    "Medida" = c(rep("Milhão de pessoas", 5), rep("(%)", 3)), 
+    .after = variable
+    ) %>% 
+  flextable::flextable() %>% 
+  flextable::set_header_labels(variable = "Indicador") %>% 
+  flextable::colformat_double(j = 3:5, digits = 2) %>% 
+  flextable::add_footer_lines(foot_ibge) %>% 
+  flextable::color(part = "footer", color = colors["gray"]) %>%
+  flextable::bold(j = 1) %>% 
+  flextable::bold(i = 6) %>% 
+  flextable::bg(i = 6, bg = paste0(colors["blue"], "45")) %>% 
+  flextable::theme_vanilla() %>% 
+  flextable::width(width = 1.8, j = 1) %>% 
+  flextable::width(width = 1.3, j = 2)
+```
+
+## Visão Geral do Mercado de Trabalho
+
+```{r echo=FALSE}
+# Gerar gáfico
+resumo_pnadcm %>% 
+  dplyr::group_by(variable) %>% 
+  dplyr::filter(date >= Sys.Date() %m-% lubridate::years(5)) %>% 
+  dplyr::ungroup() %>% 
+  dplyr::mutate(
+    labels = dplyr::if_else(
+      variable %in% unique(resumo_pnadcm$variable)[1:5], "Milhões de pessoas", "%"
+      )
+    ) %>% 
+  ggplot2::ggplot(ggplot2::aes(x = date, y = value, colour = variable)) +
+  ggplot2::geom_line(size = 1) +
+  ggplot2::facet_wrap(~variable~labels, scales = "free_y") +
+  ggplot2::scale_y_continuous(labels = scales::label_number(accuracy = 1)) +
+  ggplot2::scale_x_date(
+    breaks = scales::date_breaks("15 months"), 
+    labels = scales::date_format("%Y\n(%b)")
+  ) +
+  ggplot2::scale_colour_manual(values = unname(colors)) +
+  ggplot2::theme(
+    legend.position = "none",
+    strip.text      = ggplot2::element_text(size = 9, face = "bold"),
+    plot.title      = ggplot2::element_text(size = 12, face = "bold"),
+    plot.subtitle   = ggplot2::element_text(size = 10, face = "italic"),
+    axis.text.x     = ggplot2::element_text(hjust = 0.9),
+    strip.text.x    = ggplot2::element_text(margin = margin(1, 0, 1, 0))
+    ) +
+  ggplot2::labs(
+     x        = NULL,
+     y        = NULL,
+     title    = "Visão Geral do Mercado de Trabalho",
+     subtitle = "Indicadores da PNADC-Mensal",
+     caption  = foot_ibge
+     )
+```
+
+## Dados da PNADC-Mensal: categoria do emprego
+
+```{r echo=FALSE}
+# Gerar gáfico
+categorias %>% 
+  dplyr::group_by(variable) %>% 
+  dplyr::filter(date >= Sys.Date() %m-% lubridate::years(5)) %>% 
+  dplyr::ungroup() %>% 
+  ggplot2::ggplot(ggplot2::aes(x = date, y = value, colour = variable)) +
+  ggplot2::geom_line(size = 1) +
+  ggplot2::facet_wrap(~variable, scales = "free_y") +
+  ggplot2::scale_x_date(
+    breaks = scales::date_breaks("15 months"), 
+    labels = scales::date_format("%Y\n(%b)")
+  ) +
+  ggplot2::scale_colour_manual(values = unname(colors)) +
+  ggplot2::theme(
+    legend.position = "none",
+    strip.text      = ggplot2::element_text(size = 9, face = "bold"),
+    plot.title      = ggplot2::element_text(size = 12, face = "bold"),
+    plot.subtitle   = ggplot2::element_text(size = 10, face = "italic"),
+    axis.text.x     = ggplot2::element_text(hjust = 0.9)
+    ) +
+  ggplot2::labs(
+     x        = NULL,
+     y        = "Milhão de pessoas",
+     title    = "Categorias do emprego de pessoas ocupadas",
+     subtitle = "Indicadores da PNADC-Mensal",
+     caption  = foot_ibge
+     )
+```
+
+## Dados da PNADC-Mensal: rendimentos
+
+```{r echo=FALSE}
+# Gerar gáfico
+rendimento %>% 
+  dplyr::group_by(variable) %>% 
+  dplyr::filter(date >= Sys.Date() %m-% lubridate::years(5)) %>% 
+  dplyr::ungroup() %>% 
+  ggplot2::ggplot(ggplot2::aes(x = date, y = value, colour = variable)) +
+  ggplot2::geom_line(size = 1) +
+  ggplot2::scale_y_continuous(labels = scales::label_number(accuracy = 1)) +
+  ggplot2::scale_x_date(
+    breaks = scales::date_breaks("15 months"), 
+    labels = scales::date_format("%Y\n(%b)")
+  ) +
+  ggplot2::scale_colour_manual(NULL, values = unname(colors)) +
+  ggplot2::theme(
+    legend.position = "bottom",
+    plot.title      = ggplot2::element_text(size = 12, face = "bold"),
+    plot.subtitle   = ggplot2::element_text(size = 10, face = "italic"),
+    axis.text.x     = ggplot2::element_text(hjust = 0.9)
+    ) +
+  ggplot2::labs(
+     x        = NULL,
+     y        = "R$",
+     title    = "Rendimento médio real e nominal",
+     subtitle = "Indicadores da PNADC-Mensal",
+     caption  = foot_ibge
+     )
+```
+
+## Dados da PNADC-Mensal: massa de rendimentos
+
+```{r echo=FALSE}
+# Gerar gáfico
+massa %>% 
+  dplyr::group_by(variable) %>% 
+  dplyr::filter(date >= Sys.Date() %m-% lubridate::years(5)) %>% 
+  dplyr::ungroup() %>% 
+  ggplot2::ggplot(ggplot2::aes(x = date, y = value, colour = variable)) +
+  ggplot2::geom_line(size = 1) +
+  ggplot2::scale_y_continuous(labels = scales::label_number(accuracy = 1)) +
+  ggplot2::scale_x_date(
+    breaks = scales::date_breaks("15 months"), 
+    labels = scales::date_format("%Y\n(%b)")
+  ) +
+  ggplot2::scale_colour_manual(NULL, values = unname(colors)) +
+  ggplot2::theme(
+    legend.position = "bottom",
+    plot.title      = ggplot2::element_text(size = 12, face = "bold"),
+    plot.subtitle   = ggplot2::element_text(size = 10, face = "italic"),
+    axis.text.x     = ggplot2::element_text(hjust = 0.9)
+    ) +
+  ggplot2::labs(
+     x        = NULL,
+     y        = "R$ bilhões",
+     title    = "Massa de rendimento real e nominal",
+     subtitle = "Indicadores da PNADC-Mensal",
+     caption  = foot_ibge
+     )
+```
+
+## Saldo do Novo CAGED
+
+```{r echo=FALSE}
+# Gerar gáfico
+caged %>% 
+  dplyr::filter(date >= Sys.Date() %m-% lubridate::years(5)) %>% 
+  ggplot2::ggplot(ggplot2::aes(x = date, y = value)) +
+  ggplot2::geom_bar(
+    fill = ifelse(caged$value > 0, colors["blue"], colors["red"]),
+    stat = "identity"
+    ) +
+  ggplot2::geom_text(
+    ggplot2::aes(y = value + sign(value), label = round(value, 0)),
+    position = ggplot2::position_dodge(width = 0.9),
+    vjust    = ifelse(caged$value > 0, -0.5, 1.3),
+    size     = 3.5,
+    colour   = ifelse(caged$value > 0, colors["blue"], colors["red"]),
+    fontface = "bold"
+    ) +
+  ggplot2::scale_y_continuous(
+    expand = ggplot2::expansion(mult = 0.1),
+    breaks = scales::breaks_extended(n = 6),
+    labels = scales::label_number(accuracy = 1)
+    ) +
+  ggplot2::scale_x_date(
+    breaks = scales::date_breaks("2 months"), 
+    labels = scales::date_format("%Y\n(%b)")
+    ) +
+  ggplot2::theme(
+    plot.title    = ggplot2::element_text(size = 12, face = "bold"),
+    plot.subtitle = ggplot2::element_text(size = 10, face = "italic"),
+    axis.text.x   = ggplot2::element_text(hjust = 0.9)
+    ) +
+  ggplot2::labs(
+     x        = NULL,
+     y        = NULL,
+     title    = "Saldo do Novo CAGED",
+     subtitle = "Diferença entre o total de admissões e demissões de empregados, em milhares",
+     caption  = "Fonte: pdet.mte.gov.br (Ministério da Economia)."
+     )
+```
+
+## Pedidos de Seguro-Desemprego
+
+```{r echo=FALSE}
+# Preparar dados
+seguro_bar <- seguro %>% 
+  dplyr::mutate(
+    months = lubridate::month(date, label = TRUE) %>% forcats::as_factor(),
+    years = lubridate::year(date) %>% forcats::as_factor()
+    ) %>% 
+  dplyr::filter(
+    regiao == "Brasil",
+    months <= lubridate::month(max(date), label = TRUE)
+    )
+
+# Gerar gáfico
+seguro_bar %>% 
+  ggplot2::ggplot(ggplot2::aes(x = years, y = value / 1e3, fill = months)) +
+  ggplot2::geom_bar(stat = "identity", position = ggplot2::position_stack(reverse = TRUE)) +
+  ggplot2::scale_x_discrete(breaks = levels(seguro_bar$years)) +
+  ggplot2::scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  ggplot2::scale_fill_manual(values = unname(colors)) +
+  ggplot2::geom_text(
+    ggplot2::aes(label = months), 
+    position = ggplot2::position_stack(vjust = .5, reverse = TRUE),
+    vjust    = 0.32,
+    size     = 4, 
+    fontface = "bold",
+    color    = "white"
+    ) +
+  ggplot2::coord_flip() +
+  ggplot2::theme(
+    legend.position  = "none",
+    plot.title       = ggplot2::element_text(size = 12, face = "bold"),
+    plot.subtitle    = ggplot2::element_text(size = 10, face = "italic"),
+    axis.text.x      = ggplot2::element_blank(),
+    axis.text.y      = ggplot2::element_text(face = "bold", size = 10), 
+    axis.ticks       = ggplot2::element_blank(),
+    panel.background = element_blank()
+    ) +
+  ggplot2::labs(
+    x        = NULL,
+    y        = NULL,
+    title    = "Pedidos de Seguro-Desemprego",
+    subtitle = "Em milhões de requisições acumuladas no ano até o mês de corte",
+    caption  = "Fonte: pdet.mte.gov.br (Ministério da Economia)."
+    ) + 
+  ggplot2::geom_text(
+    ggplot2::aes(label = round(stat(y) / 1e3, 2), group = years), 
+    stat     = "summary", 
+    fun      = sum, 
+    vjust    = .4,
+    hjust    = -.2,
+    size     = 4.2,
+    fontface = "bold"
+  )
+```

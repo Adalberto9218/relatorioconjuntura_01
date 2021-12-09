@@ -1,0 +1,391 @@
+## PIB
+
+```{r echo=FALSE}
+indicadores_pib <- list(
+  api_pib_sa = "/t/1621/n1/all/v/all/p/all/c11255/90707/d/v584%202",
+  
+  api_pib = "/t/1620/n1/all/v/all/p/all/c11255/90707/d/v583%202",
+  
+  api_pib_componentes_sa = 
+    "/t/1621/n1/all/v/all/p/all/c11255/90687,90691,90696,90707,93404,93405,93406,93407,93408/d/v584%202",
+  
+  api_pib_componentes = 
+    "/t/1620/n1/all/v/all/p/all/c11255/90687,90691,90696,90707,93404,93405,93406,93407,93408/d/v583%202")
+
+```
+
+\bigskip
+
+```{r download, echo=FALSE}
+raw_pib_sa <- sidrar::get_sidra(api = indicadores_pib$api_pib_sa)
+
+raw_pib <- sidrar::get_sidra(api = indicadores_pib$api_pib)
+
+raw_componentes <- sidrar::get_sidra(api = indicadores_pib$api_pib_componentes)
+
+raw_componentes_sa <- sidrar::get_sidra(api = indicadores_pib$api_pib_componentes_sa)
+
+```
+\bigskip
+
+```{r tratamento, echo=FALSE}
+# PIB com ajuste sazonal
+pib_sa <- raw_pib_sa %>%
+  dplyr::mutate(
+    date         = zoo::as.yearqtr(`Trimestre (Código)`, format = "%Y%q"),
+    var_marginal = (Valor / dplyr::lag(Valor, 1) - 1) * 100
+    ) %>%
+  dplyr::select(date, "pib_sa" = Valor, var_marginal) %>%
+  dplyr::as_tibble()
+
+# PIB sem ajuste sazonal
+pib <- raw_pib %>%
+  dplyr::mutate(
+    date           = zoo::as.yearqtr(`Trimestre (Código)`, format = "%Y%q"),
+    var_interanual = (Valor / dplyr::lag(Valor, 4) - 1) * 100,
+    var_anual      = acum_i(Valor, 4)
+    ) %>%
+  dplyr::select(date, "pib" = Valor, var_interanual, var_anual) %>%
+  dplyr::as_tibble()
+
+# Juntar os dados
+df_pib <- dplyr::inner_join(pib_sa, pib, by = "date") %>%
+  tidyr::drop_na() %>% 
+  dplyr::filter(date >= "2007 Q1") 
+
+# Componentes do PIB sem ajuste sazonal
+componentes_pib <- raw_componentes %>%
+  dplyr::select(
+    "date"    = `Trimestre (Código)`,
+    "sectors" = `Setores e subsetores`,
+    "value"   = Valor
+    ) %>%
+  dplyr::group_by(sectors) %>%
+  dplyr::mutate(
+    date       = zoo::as.yearqtr(date, format = "%Y%q"),
+    interanual = (value / dplyr::lag(value, 4) - 1) * 100 ,
+    anual      = acum_i(value, 4),
+    sectors    = stringr::str_remove_all(sectors, "( - total)| \\(-\\)") %>% 
+      dplyr::recode("Despesa de consumo da administração pública" = "Consumo do governo")
+    ) %>% 
+  dplyr::filter(date >= "2014 Q1") %>% 
+  dplyr::as_tibble() %>% 
+  tidyr::drop_na()
+
+# Componentes do PIB com ajuste sazonal
+componentes_sa_pib <- raw_componentes_sa %>%
+  dplyr::select(
+    "date"    = `Trimestre (Código)`,
+    "sectors" = `Setores e subsetores`,
+    "value"   = Valor
+    ) %>%
+  dplyr::group_by(sectors) %>%
+  dplyr::mutate(
+    date       = zoo::as.yearqtr(date, format = "%Y%q"),
+    margem     = (value / dplyr::lag(value, 1) - 1) * 100,
+    sectors    = stringr::str_remove_all(sectors, "( - total)| \\(-\\)") %>% 
+      dplyr::recode("Despesa de consumo da administração pública" = "Consumo do governo")
+    ) %>% 
+  dplyr::filter(date >= "2014 Q1") %>% 
+  dplyr::as_tibble() %>% 
+  tidyr::drop_na()
+```
+
+\bigskip
+
+```{r tible_pib}
+# Filtrar últimos 8 trimestres
+df_pib_tbl <- df_pib %>% 
+  dplyr::slice_tail(n = 8) %>%
+  dplyr::select(var_marginal, var_interanual, var_anual)
+
+# Tabela com variações e número índice do PIB
+df_pib %>% 
+  dplyr::slice_tail(n = 8) %>% 
+  flextable::flextable() %>% 
+  flextable::set_header_labels(
+    date = "Trimestre", pib_sa = "PIB s.a.", var_marginal = "Var. Marginal", pib = "PIB", 
+    var_interanual = "Var. Interanual", var_anual = "Var. Anual"
+    ) %>% 
+  flextable::add_header_row(
+    colwidths = c(3, 3), 
+    values = c("Sazonalmente ajustado", "Sem ajuste sazonal")
+    ) %>% 
+  flextable::colformat_double(j = 2:6, digits = 2) %>% 
+  flextable::align(i = 1, part = "header", align = "center") %>% 
+  flextable::add_footer_lines(foot_ibge) %>% 
+  flextable::color(part = "footer", color = colors["gray"]) %>%
+  flextable::bg(
+    j = c("var_marginal", "var_interanual", "var_anual"),
+    bg = scales::col_numeric(
+      palette = colorspace::diverge_hcl(n = 20, palette = "Blue-Red 2"),
+      reverse = TRUE,
+      domain = c(-max(abs(df_pib_tbl)), max(abs(df_pib_tbl)))
+      ),
+    part = "body"
+    ) %>% 
+  flextable::theme_vanilla() %>% 
+  flextable::width(width = .95)
+
+```
+
+\bigskip
+
+## Os números índices do PIB
+
+```{r indices_pib}
+# Gerar gráfico
+df_pib %>% 
+  dplyr::filter(date > "2000 Q1") %>%
+  ggplot2::ggplot(ggplot2::aes(x = date)) +
+  ggplot2::geom_line(ggplot2::aes(y = pib, color = "PIB"), size = 0.8) +
+  ggplot2::geom_line(ggplot2::aes(y = pib_sa, color = "PIB s.a."), size = 0.8) +
+  ggplot2::scale_color_manual(
+    NULL,
+    values = c("PIB" = unname(colors[1]), "PIB s.a." = unname(colors[2]))
+    ) +
+  zoo::scale_x_yearqtr(
+    breaks = scales::pretty_breaks(n = 8),
+    format = "%Y T%q"
+    ) +
+  ggplot2::theme(
+    plot.title       = ggplot2::element_text(size = 12, face = "bold"),
+    legend.position  = "bottom"
+    ) +
+  ggplot2::labs(
+    x       = NULL, 
+    y       = "Número Índice",
+    title   = "Produto Interno Bruto",
+    caption = foot_ibge
+    )
+```
+
+## Variação marginal do PIB
+
+```{r pib_marginal}
+# Função para gerar gráfico
+plotar_pib <- function(y, title, sub, foot) {
+  
+  my_plt <- df_pib %>% 
+    ggplot2::ggplot(ggplot2::aes(x = date, y = y)) +
+    ggplot2::geom_bar(
+      stat = "identity",
+      fill = ifelse(y > 0, colors[1], colors[2]), 
+      colour = "black"
+      ) +
+    zoo::scale_x_yearqtr(breaks = scales::pretty_breaks(n = 8), format = "%Y T%q") +
+    theme(
+      plot.title    = element_text(size = 12, face = "bold"),
+      plot.subtitle = element_text(size = 8, face = "italic")
+      ) +
+    labs(
+      x        = NULL, 
+      y        = "%",
+      title    = title,
+      subtitle = sub,
+      caption  = foot
+      )
+  
+  return(my_plt)
+  
+}
+
+# Plotar primeiro gráfico
+plotar_pib(
+  y     = df_pib$var_marginal,
+  title = "Variação do PIB na margem",
+  sub   = "PIB em t contra o PIB em t-1",
+  foot  = foot_ibge
+)
+```
+
+## Variação interanual do PIB
+
+```{r pib_interanual}
+# Plotar gráfico
+plotar_pib(
+  y     = df_pib$var_interanual,
+  title = "Variação do PIB em relação ao mesmo trimestre do ano anterior", 
+  sub   = "PIB em t contra o PIB em t-4", 
+  foot  = foot_ibge
+)
+```
+
+
+## Variação acumulada em 4 trimestres
+
+```{r pib_anual}
+# Plotar gráfico
+plotar_pib(
+  y     = df_pib$var_anual,
+  title = "Variação do PIB acumulada em quatro trimestres",
+  sub   = "", 
+  foot  = foot_ibge
+)
+```
+
+## PIB e seus componentes
+
+```{r tbl_componentes_margem}
+# Criar função para gerar tabela
+gerar_flextbl <- function(df, titulo, foot) {
+
+  # Gera tabela
+  df %>% 
+    flextable::flextable() %>% 
+    flextable::set_caption(paste0(titulo, "\n")) %>% 
+    flextable::set_header_labels(
+      date                              = "Trimestre", 
+      `PIB a preços de mercado`         = "PIB", 
+      `Despesa de consumo das famílias` = "C",
+      `Consumo do governo`              = "G", 
+      `Formação bruta de capital fixo`  = "FBCF", 
+      `Exportação de bens e serviços`   = "X", 
+      `Importação de bens e serviços`   = "M"
+      ) %>% 
+    flextable::add_footer_lines(foot) %>% 
+    flextable::color(part = "footer", color = colors["gray"]) %>%
+    flextable::colformat_double(j = 2:10, digits = 2) %>% 
+    flextable::bg(
+      j = 2:10,
+      bg = scales::col_numeric(
+        palette = colorspace::diverge_hcl(n = 20, palette = "Blue-Red 2"),
+        reverse = TRUE,
+        domain = c(-max(abs(df[2:10])), max(abs(df[2:10])))
+        ),
+      part = "body"
+      ) %>% 
+    flextable::theme_vanilla() %>% 
+    flextable::width(width = .43)
+  
+}
+
+# Filtrar últimos 8 trimestres
+componentes_tbl_margem <- componentes_sa_pib %>% 
+  dplyr::select(-value) %>% 
+  tidyr::pivot_wider(
+    id_cols     = date,
+    names_from  = sectors, 
+    values_from = margem
+    ) %>% 
+  dplyr::slice_tail(n = 8)
+
+# Gerar tabela
+gerar_flextbl(
+  df     = componentes_tbl_margem,
+  titulo = "PIB e seus componentes: Variação na margem (%)\n",
+  foot   = foot_ibge
+  )
+```
+
+## PIB e seus componentes
+
+```{r plt_componentes_margem}
+# Criar função para gerar gráfico
+plotar_componentes <- function(df, y, sub, foot) {
+  
+  my_df <- df %>% 
+    ggplot2::ggplot(ggplot2::aes(x = date, y = y, colour = sectors)) +
+    ggplot2::geom_bar(ggplot2::aes(fill = sectors, colour = sectors), stat = "identity") +
+    ggplot2::scale_fill_manual(values = unname(colors)) +
+    ggplot2::scale_colour_manual(values = unname(colors)) +
+    ggplot2::geom_hline(yintercept = 0, colour = "black", linetype = "dashed") +
+    ggplot2::facet_wrap(~sectors, scales = "free_y") +
+    ggplot2::theme(
+      legend.position = "none",
+      strip.text      = element_text(size = 7, face = "bold"),
+      axis.text.x     = element_text(size = 6),
+      plot.title      = element_text(size = 10, face = "bold"),
+      plot.subtitle   = element_text(size = 8, face = "italic")
+      ) +
+    zoo::scale_x_yearqtr(breaks = scales::pretty_breaks(n = 4), format = "%Y T%q") +
+    ggplot2::labs(
+       x        = "",
+       y        = "",
+       title    = "Componentes do PIB",
+       subtitle = sub,
+       caption  = foot
+       )
+  
+  return(my_df)
+  
+}
+
+# Gerar gráfico
+plotar_componentes(
+  df   = componentes_sa_pib,
+  y    = componentes_sa_pib$margem, 
+  sub  = "Variação contra o trimestre imediatamente anterior (%)", 
+  foot = foot_ibge
+)
+```
+
+
+## PIB e seus componentes
+
+```{r tbl_componentes_interanual}
+# Filtrar últimos 8 trimestres
+componentes_tbl_interanual <- componentes_pib %>% 
+  dplyr::select(-value) %>% 
+  tidyr::pivot_wider(
+    id_cols     = date,
+    names_from  = sectors, 
+    values_from = interanual
+    ) %>% 
+  dplyr::slice_tail(n = 8)
+
+# Gerar tabela
+gerar_flextbl(
+  df     = componentes_tbl_interanual,
+  titulo = "PIB e seus componentes: Variação interanual (%)\n",
+  foot   = foot_ibge
+  )
+```
+
+
+## PIB e seus componentes
+
+```{r plt_componentes_interanual}
+# Gerar gráfico
+plotar_componentes(
+  df   = componentes_pib,
+  y    = componentes_pib$interanual, 
+  sub  = "Variação contra o mesmo trimestre do ano anterior (%)", 
+  foot = foot_ibge
+)
+```
+
+
+## PIB e seus componentes
+
+```{r tbl_componentes_anual}
+# Filtrar últimos 8 trimestres
+componentes_tbl_anual <- componentes_pib %>% 
+  dplyr::select(-value) %>% 
+  tidyr::pivot_wider(
+    id_cols     = date,
+    names_from  = sectors, 
+    values_from = anual
+    ) %>% 
+  dplyr::slice_tail(n = 8)
+
+# Gerar tabela
+gerar_flextbl(
+  df     = componentes_tbl_anual,
+  titulo = "PIB e seus componentes: Variação acumulada em 4 trimestres (%)\n",
+  foot   = foot_ibge
+  )
+```
+
+
+## PIB e seus componentes
+
+```{r plt_componentes_anual}
+# Gerar gráfico
+plotar_componentes(
+  df   = componentes_pib,
+  y    = componentes_pib$anual, 
+  sub  = "Variação acumulada em 4 trimestres (%)", 
+  foot = foot_ibge
+)
+```

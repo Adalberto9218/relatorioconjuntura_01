@@ -1,0 +1,46 @@
+
+```{r, echo=F}
+
+data = rbcb::get_annual_market_expectations(c('PIB Total', 'IPCA', 
+                                        'Câmbio', 
+                                        'Selic',
+                                        'Resultado primário',
+                                        'Resultado nominal'),
+                                      start_date = '2021-01-01') %>%
+  replace_na(replace = list(indic_detail = 'Média'))
+
+```
+
+## Expectativas de mercado
+
+```{r, echo=F}
+
+dplyr::filter(data, reference_date == '2021' & base == 0 &
+         indic_detail %in% c('Média', 'Fim do ano') &
+         date > '2021-01-01') %>%
+  ggplot(aes(x=date, colour=indic))+
+  geom_ribbon(aes(ymin=min, ymax=max), colour='gray', fill='gray')+
+  geom_line(aes(y=min, colour='Mínimo', linetype='Mínimo'), size=.8)+
+  geom_line(aes(y=max, colour='Máximo', linetype='Máximo'), size=.8)+
+  geom_line(aes(y=mean, colour='Média', linetype='Média'), size=.8)+
+  scale_colour_manual('', values=c('Mínimo'='darkblue',
+                                   'Máximo'='darkblue',
+                                   'Média'='red'))+
+  scale_linetype_manual('', values=c('Mínimo'='solid',
+                                   'Máximo'='dashed',
+                                   'Média'='solid'))+
+  geom_hline(yintercept=0, colour='black', linetype='dashed')+
+  facet_wrap(~indic, scales = 'free')+
+  scale_x_date(breaks = date_breaks("14 days"),
+               labels = date_format("%d/%b"))+
+  theme(axis.text.x=element_text(angle=45, hjust=1),
+        legend.position = 'none',
+        strip.text = element_text(size=10, face='bold'))+
+  labs(x='', y='',
+       title='Expectativas do boletim Focus para 2021',
+       caption='Fonte: analisemacro.com.br com dados do BCB')
+
+```
+
+
+

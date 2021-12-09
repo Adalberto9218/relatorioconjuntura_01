@@ -1,0 +1,214 @@
+---
+title: "Relatório de Conjuntura usando o R"
+subtitle: "**Macroeconomia Nacional**"
+author: "Adalberto dos Santos Junior"
+date: "`r format(Sys.time(), '%d de %B, %Y')`"
+output: beamer_presentation
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+library(knitr)
+library(flextable)
+library(tidyverse)
+library(sidrar)
+library(lubridate)
+library(scales)
+library(ggrepel)
+library(fpp3)
+library(rbcb)
+library(readxl)
+library(xtable)
+library(RcppRoll)
+library(xts)
+library(reshape2)
+library(GetTDData)
+library(ipeadatar)
+library(Quandl)
+library(mFilter)
+library(timetk)
+library(png)
+library(grid)
+library(tstools)
+library(gridExtra)
+library(ecoseries)
+
+```
+
+```{r utils}
+## Funções e objetos úteis 
+
+# Acumular  valores percentuais em 'n' janelas móveis
+acum_i <- function(data, n){
+  
+  data_ma_n <- RcppRoll::roll_meanr(data, n)
+  
+  data_lag_n <- dplyr::lag(data_ma_n, n)
+  
+  data_acum_n = (((data_ma_n/data_lag_n)-1)*100)
+  
+  return(data_acum_n)
+  
+}
+
+# Cores para gráficos e tabelas
+colors <- c(
+  blue       = "#282f6b",
+  red        = "#b22200",
+  yellow     = "#eace3f",
+  green      = "#224f20",
+  purple     = "#5f487c",
+  orange     = "#b35c1e",
+  turquoise  = "#419391",
+  green_two  = "#839c56",
+  light_blue = "#3b89bc",
+  gray       = "#666666"
+  )
+
+series = c(ipca_ex2 = 27838,
+           ipca_ex3 = 27839,
+           ipca_ms = 4466,
+           ipca_ma = 11426,
+           ipca_ex0 = 11427,
+           ipca_ex1 = 16121,
+           ipca_dp = 16122)
+
+series2 = c('Comercializáveis' = 4447, 
+           'Não Comercializáveis' = 4448,
+           'Monitorados' = 4449, 
+           'Não Duráveis' = 10841, 
+           'Semi-Duráveis' = 10842,
+           'Duráveis' = 10843, 
+           'Serviços' = 10844, 
+           'Livres' = 11428)
+
+# Fonte para gráficos e tabelas
+foot_ibge <- "Fonte: sidra.ibge.gov.br(Sidra/IBGE)."
+foot_bcb <- "Fonte: bcb.gov.br(BCB)."
+foot_b3_bcb <- "Fonte: analisemacro.com.br com dados de B3 e BCB."
+foot_anbima <- "Fonte: anbima.com.br(Anbima)."
+
+
+# Definir padrão de tabelas
+flextable::set_flextable_defaults(
+  big.mark         = " ", 
+  font.size        = 10,
+  theme_fun        = theme_vanilla,
+  padding.bottom   = 6, 
+  padding.top      = 6,
+  padding.left     = 6,
+  padding.right    = 6, 
+  decimal.mark     = ",", 
+  digits           = 2L
+  )
+
+clean_pnadcm <- function(data, id) {
+  
+  data  %>% 
+    dplyr::select(
+      "date"     = `Trimestre Móvel (Código)`,
+      "value"    = `Valor`
+      ) %>% 
+    dplyr::mutate(
+      date     = lubridate::ym(date),
+      variable = id
+      ) %>% 
+    dplyr::as_tibble()
+}
+
+acum_p <- function(data, n){
+
+    factor <- (1+(data/100))
+
+    prod <- RcppRoll::roll_prodr(factor, n = n)
+
+    final <- (prod-1)*100
+
+    return(final)
+
+}
+
+plt_focus <- function(data, title, subtitle, y_lab) {
+  data %>% 
+    ggplot2::ggplot(ggplot2::aes(x = date, y = median, colour = reference_date, fill = reference_date)) +
+    ggplot2::geom_line(size = 1) +
+    ggplot2::scale_colour_manual(NULL, values = unname(colors[1:2])) +
+    ggplot2::scale_fill_manual(NULL, values = unname(colors[1:2])) +
+    ggplot2::labs(
+      title    = title,
+      subtitle = subtitle,
+      caption  = foot_bcb,
+      y        = y_lab,
+      x        = ""
+    ) +
+    ggplot2::scale_x_date(
+      breaks = scales::breaks_width("3 months"),
+      labels = function(x) dplyr::if_else(
+        is.na(dplyr::lag(x)) | !lubridate::year(dplyr::lag(x)) == lubridate::year(x), 
+        paste(lubridate::month(x, label = TRUE), "\n", lubridate::year(x)),
+        paste(lubridate::month(x, label = TRUE))
+      )
+    ) +
+    ggplot2::scale_y_continuous(
+      labels = scales::comma_format(big.mark = " ", decimal.mark = ",", accuracy = 0.1)
+    ) +
+    ggplot2::coord_cartesian(clip = "off") +
+    ggrepel::geom_label_repel(
+      ggplot2::aes(label = paste0(" ", format(round(median, 1), decimal.mark = ","))),
+      nudge_x        = 20,
+      direction      = "y",
+      hjust          = 0,
+      label.size     = 0,
+      fontface       = "bold",
+      segment.colour = "transparent",
+      show.legend    = FALSE,
+      color          = "white",
+      xlim           = as.Date(c(min(data$date), max(data$date) + 120)),
+      data           = dplyr::filter(data, date == max(date))
+    ) +
+    ggplot2::theme(
+      panel.background   = ggplot2::element_rect(fill = "white", colour = "white"),
+      axis.line.x.bottom = ggplot2::element_line(colour = "black"),
+      axis.line.y.left   = ggplot2::element_line(colour = "black"),
+      legend.position    = "top",
+      legend.direction   = "horizontal",
+      plot.margin        = ggplot2::margin(5, 25, 5, 5)
+    )
+}
+
+imgs_focus <- c(
+  up     = "./imgs/up.png",
+  down   = "./imgs/down.png",
+  equals = "./imgs/equals.png"
+  )
+```
+
+
+# Atividade Economica
+
+```{r message=FALSE, echo=FALSE, warning=FALSE, child= "pib.Rmd"}
+
+```
+
+# Inflacao
+
+```{r message=FALSE, echo=FALSE, warning=FALSE, child="inflacao.Rmd"}
+
+```
+
+# Politica Monetaria e Expectativas
+
+```{r message=FALSE, echo=FALSE, warning=FALSE, child="monetaria.Rmd"}
+
+```
+
+# Mercado de Trabalho
+
+```{r message=FALSE, echo=FALSE, warning=FALSE, child="desemprego.Rmd"}
+
+```
+
